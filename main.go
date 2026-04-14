@@ -110,6 +110,10 @@ func eventHandler(evt interface{}) {
 				"Telp: 0812-xxxx-xxxx\n" +
 				"Alamat: Kantor Diskominfo Kab.Bengkayang \n\n" +
 				"Ketik 0 untuk kembali ke menu"
+			
+		case "4":
+			reply = "🌐 *Website Bengkayang *\n\n" +
+				"https://bengkayangkab.go.id/"
 
 		case "0":
 			reply = mainMenu()
@@ -133,5 +137,6 @@ func mainMenu() string {
 		"1. Informasi Layanan\n" +
 		"2. Syarat Administrasi\n" +
 		"3. Kontak\n\n" +
+		"4. Website Bengkayang\n\n" +
 		"Ketik angka untuk memilih."
 }
