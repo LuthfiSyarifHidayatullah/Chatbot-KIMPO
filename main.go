@@ -1,9 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
+	"net/http"
 
 	waLog "go.mau.fi/whatsmeow/util/log"
 
@@ -22,26 +25,22 @@ var client *whatsmeow.Client
 func main() {
 	ctx := context.Background()
 
-	// Database
 	dbLog := waLog.Stdout("Database", "INFO", true)
 	container, err := sqlstore.New(ctx, "sqlite3", "file:store.db?_foreign_keys=on", dbLog)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	// Device
 	deviceStore, err := container.GetFirstDevice(ctx)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	// Client
 	clientLog := waLog.Stdout("Client", "INFO", true)
 	client = whatsmeow.NewClient(deviceStore, clientLog)
 
 	client.AddEventHandler(eventHandler)
 
-	// Login / QR
 	if client.Store.ID == nil {
 		qrChan, _ := client.GetQRChannel(ctx)
 		err = client.Connect()
@@ -64,12 +63,11 @@ func main() {
 		}
 	}
 
-	// Keep running
 	select {}
 }
 
 // =========================
-// EVENT HANDLER (MENU INTERAKTIF)
+// EVENT HANDLER (AMBIL DARI API)
 // =========================
 func eventHandler(evt interface{}) {
 	switch v := evt.(type) {
@@ -77,50 +75,14 @@ func eventHandler(evt interface{}) {
 	case *events.Message:
 		msg := ""
 
-		// Ambil pesan
 		if v.Message.Conversation != nil {
 			msg = *v.Message.Conversation
 		}
 
 		fmt.Println("Pesan masuk:", msg)
 
-		var reply string
-
-		// =========================
-		// LOGIC MENU
-		// =========================
-		switch msg {
-
-		case "1":
-			reply = "📄 *Informasi Layanan*\n\n" +
-				"1. Fasilitasi Zoom meeting\n" +
-				"2. Fasilitasi Dokumentasi\n" +
-				"3. Pembuatan Email Pemkab \n" +
-				"4. Pembuatan TTE \n\n" +
-				"Ketik 0 untuk kembali ke menu"
-
-		case "2":
-			reply = "📑 *Syarat Administrasi Fasilitasi*\n\n" +
-				"- Surat Permintaan Fasilitasi \n" +
-				"- \n\n" +
-				"Ketik 0 untuk kembali ke menu"
-
-		case "3":
-			reply = "📞 *Kontak Layanan *\n\n" +
-				"Telp: 0812-xxxx-xxxx\n" +
-				"Alamat: Kantor Diskominfo Kab.Bengkayang \n\n" +
-				"Ketik 0 untuk kembali ke menu"
-			
-		case "4":
-			reply = "🌐 *Website Bengkayang *\n\n" +
-				"https://bengkayangkab.go.id/"
-
-		case "0":
-			reply = mainMenu()
-
-		default:
-			reply = mainMenu()
-		}
+		// 🔥 Ambil jawaban dari Laravel
+		reply := getReplyFromAPI(msg)
 
 		client.SendMessage(context.Background(), v.Info.Chat, &waProto.Message{
 			Conversation: &reply,
@@ -129,14 +91,27 @@ func eventHandler(evt interface{}) {
 }
 
 // =========================
-// MENU UTAMA
+// FUNCTION API LARAVEL
 // =========================
-func mainMenu() string {
-	return "Halo 👋 Selamat datang \n\n" +
-		"Silakan pilih layanan:\n" +
-		"1. Informasi Layanan\n" +
-		"2. Syarat Administrasi\n" +
-		"3. Kontak\n\n" +
-		"4. Website Bengkayang\n\n" +
-		"Ketik angka untuk memilih."
+func getReplyFromAPI(message string) string {
+	url := "http://36.67.17.105:8000/api/chatbot" // ⚠️ GANTI jika beda
+
+	payload := map[string]string{
+		"message": message,
+	}
+
+	jsonData, _ := json.Marshal(payload)
+
+	resp, err := http.Post(url, "application/json", bytes.NewBuffer(jsonData))
+	if err != nil {
+		fmt.Println("Error:", err)
+		return "Server sedang bermasalah"
+	}
+
+	defer resp.Body.Close()
+
+	var result map[string]string
+	json.NewDecoder(resp.Body).Decode(&result)
+
+	return result["reply"]
 }
