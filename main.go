@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"log"
 	"net/http"
@@ -24,13 +23,12 @@ import (
 var client *whatsmeow.Client
 
 func main() {
-	dashboardAddr := flag.String("dashboard", ":8080", "alamat HTTP dashboard (mis. :8080)")
-	flag.Parse()
+	loadConfig()
 
 	ctx := context.Background()
 
-	// Jalankan dashboard web terlebih dulu supaya QR bisa langsung muncul
-	startDashboard(*dashboardAddr)
+	// Jalankan dashboard HTTP (API + halaman HTML fallback).
+	startDashboard(config.DashboardAddr)
 
 	dbLog := waLog.Stdout("Database", "INFO", true)
 	container, err := sqlstore.New(ctx, "sqlite3", "file:store.db?_foreign_keys=on", dbLog)
@@ -122,24 +120,22 @@ func eventHandler(evt interface{}) {
 			fmt.Println("Gagal kirim balasan:", err)
 		}
 
-		// Catat ke dashboard
+		// Catat ke dashboard (in-memory + push webhook ke Laravel).
 		metrics.logIncoming(v.Info.Chat.String(), msg, reply)
 	}
 }
 
 // =========================
-// FUNCTION API LARAVEL
+// FUNCTION API LARAVEL (reply generator)
 // =========================
 func getReplyFromAPI(message string) string {
-	url := "http://36.67.17.105:8000/api/chatbot" // GANTI jika beda
-
 	payload := map[string]string{
 		"message": message,
 	}
 
 	jsonData, _ := json.Marshal(payload)
 
-	resp, err := http.Post(url, "application/json", bytes.NewBuffer(jsonData))
+	resp, err := http.Post(config.ReplyAPIURL, "application/json", bytes.NewBuffer(jsonData))
 	if err != nil {
 		fmt.Println("Error:", err)
 		metrics.incError()

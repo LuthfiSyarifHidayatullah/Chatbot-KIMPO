@@ -62,7 +62,6 @@ var metrics = &Metrics{
 
 func (m *Metrics) logIncoming(from, message, reply string) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 
 	now := time.Now()
 	m.TotalMessages++
@@ -83,11 +82,19 @@ func (m *Metrics) logIncoming(from, message, reply string) {
 	if len(m.RecentMessages) > 100 {
 		m.RecentMessages = m.RecentMessages[:100]
 	}
+	m.mu.Unlock()
+
+	// Push ke Laravel (async, non-blocking)
+	sendWebhook("message", messagePayload{
+		From:      from,
+		Direction: "in",
+		Message:   message,
+		Reply:     reply,
+	})
 }
 
 func (m *Metrics) logOutgoing(to, message string) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 
 	m.TotalMessages++
 	m.OutgoingMessages++
@@ -102,6 +109,13 @@ func (m *Metrics) logOutgoing(to, message string) {
 	if len(m.RecentMessages) > 100 {
 		m.RecentMessages = m.RecentMessages[:100]
 	}
+	m.mu.Unlock()
+
+	sendWebhook("message", messagePayload{
+		From:      to,
+		Direction: "out",
+		Message:   message,
+	})
 }
 
 func (m *Metrics) incError() {
@@ -112,19 +126,23 @@ func (m *Metrics) incError() {
 
 func (m *Metrics) setConnected(v bool) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	m.Connected = v
 	if v {
 		m.QRCodeB64 = ""
 		m.LastQRText = ""
 	}
+	m.mu.Unlock()
+
+	sendWebhook("connection", connectionPayload{Connected: v})
 }
 
 func (m *Metrics) setQR(code string, pngB64 string) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	m.LastQRText = code
 	m.QRCodeB64 = pngB64
+	m.mu.Unlock()
+
+	sendWebhook("qr", qrPayload{QRCodeB64: pngB64})
 }
 
 // =========================
@@ -133,11 +151,15 @@ func (m *Metrics) setQR(code string, pngB64 string) {
 
 func startDashboard(addr string) {
 	mux := http.NewServeMux()
+	// Halaman HTML lama (fallback kalau belum deploy Vue).
 	mux.HandleFunc("/", handleIndex)
-	mux.HandleFunc("/api/stats", handleStats)
-	mux.HandleFunc("/api/messages", handleMessages)
-	mux.HandleFunc("/api/qr", handleQR)
-	mux.HandleFunc("/api/send", handleSend)
+
+	// API: dilindungi middleware CORS + (opsional) API key.
+	mux.Handle("/api/stats", withAPIMiddleware(http.HandlerFunc(handleStats)))
+	mux.Handle("/api/messages", withAPIMiddleware(http.HandlerFunc(handleMessages)))
+	mux.Handle("/api/qr", withAPIMiddleware(http.HandlerFunc(handleQR)))
+	mux.Handle("/api/send", withAPIMiddleware(http.HandlerFunc(handleSend)))
+	mux.Handle("/api/health", withAPIMiddleware(http.HandlerFunc(handleHealth)))
 
 	fmt.Printf("\n🚀 Dashboard KIMPO aktif di: http://localhost%s\n\n", addr)
 
@@ -146,6 +168,58 @@ func startDashboard(addr string) {
 			fmt.Println("Dashboard server error:", err)
 		}
 	}()
+}
+
+// withAPIMiddleware memasang CORS + validasi API key (jika dikonfigurasi).
+func withAPIMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// --- CORS ---
+		origin := r.Header.Get("Origin")
+		if isAllowedOrigin(origin) {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Vary", "Origin")
+			w.Header().Set("Access-Control-Allow-Credentials", "true")
+		}
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-Api-Key, Authorization")
+
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+
+		// --- API key check (kalau dikonfigurasi) ---
+		if config.InboundAPIKey != "" {
+			if r.Header.Get("X-Api-Key") != config.InboundAPIKey {
+				http.Error(w, "invalid api key", http.StatusUnauthorized)
+				return
+			}
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
+func isAllowedOrigin(origin string) bool {
+	if origin == "" {
+		return false
+	}
+	for _, o := range config.AllowedOrigins {
+		if o == "*" || o == origin {
+			return true
+		}
+	}
+	return false
+}
+
+func handleHealth(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	connected := client != nil && client.IsConnected()
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":    "ok",
+		"connected": connected,
+		"uptime":    time.Since(metrics.StartedAt).Round(time.Second).String(),
+	})
 }
 
 func handleIndex(w http.ResponseWriter, r *http.Request) {
